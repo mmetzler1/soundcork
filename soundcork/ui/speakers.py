@@ -3,6 +3,7 @@ import re
 import urllib.request
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape
 
 from bosesoundtouchapi.soundtouchclient import (  # type: ignore
     ContentItem as BCContentItem,
@@ -431,6 +432,137 @@ class Speakers:
                 )
         return False
 
+    def get_bass(self, device_id: str) -> dict | None:
+        """Return the device's bass setting and its limits, or None on failure.
+
+        SoundTouch firmware has no treble control -- `/audioproducttonecontrols`
+        belongs to the later Bose Home Speaker API and 404s here -- so bass is
+        the only tone control soundcork can offer. The limits differ per model
+        (a SoundTouch 20 allows -9..0), so they are read from the device rather
+        than assumed.
+        """
+        cd = self.all_devices().get(device_id)
+        if not cd or not cd.ip:
+            logger.error(f"Device {device_id} not found")
+            return None
+        try:
+            caps = ET.fromstring(self._speaker_get(cd.ip, "/bassCapabilities"))
+            if (caps.findtext("bassAvailable") or "").lower() != "true":
+                return {"available": False}
+            level = ET.fromstring(self._speaker_get(cd.ip, "/bass"))
+            return {
+                "available": True,
+                "bass": int(level.findtext("actualbass") or 0),
+                "min": int(caps.findtext("bassMin") or -9),
+                "max": int(caps.findtext("bassMax") or 0),
+                "default": int(caps.findtext("bassDefault") or 0),
+            }
+        except Exception as e:
+            logger.error(f"get_bass failed for {device_id} ({cd.ip}): {e}")
+            return None
+
+    def set_bass(self, device_id: str, level: int) -> bool:
+        """Set the bass level, clamped to what the device reports as its range."""
+        cd = self.all_devices().get(device_id)
+        if not cd or not cd.ip:
+            logger.error(f"Device {device_id} not found")
+            return False
+        caps = self.get_bass(device_id)
+        if not caps or not caps.get("available"):
+            logger.error(f"Device {device_id} does not support bass control")
+            return False
+        level = max(caps["min"], min(caps["max"], level))
+        try:
+            url = f"http://{cd.ip}:{BOSE_HTTP_PORT}/bass"
+            req = urllib.request.Request(
+                url,
+                data=f"<bass>{level}</bass>".encode(),
+                method="POST",
+                headers={"Content-Type": "application/xml"},
+            )
+            with urllib.request.urlopen(req, timeout=5):
+                pass
+            logger.info(f"Set bass to {level} on device {device_id}")
+            return True
+        except Exception as e:
+            logger.error(f"set_bass failed for {device_id} ({cd.ip}): {e}")
+            return False
+
+    @staticmethod
+    def _speaker_get(ip: str, path: str) -> bytes:
+        url = f"http://{ip}:{BOSE_HTTP_PORT}{path}"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return resp.read()
+
+    def orion_station_url(self, stream_url: str, name: str) -> str:
+        """Build the Soundcork Orion URL a speaker plays an arbitrary stream from.
+
+        Returns an empty string when base_url is unset, since the speaker has
+        to be able to reach that URL itself.
+        """
+        import base64 as _b64
+        import json as _json
+
+        base = self._settings.base_url.rstrip("/") if self._settings.base_url else ""
+        if not base:
+            logger.warning(
+                "base_url is not configured; cannot build LOCAL_INTERNET_RADIO URL"
+            )
+            return ""
+        station_data = _b64.urlsafe_b64encode(
+            _json.dumps(
+                {"name": name, "imageUrl": "", "streamUrl": stream_url}
+            ).encode()
+        ).decode()
+        return (
+            f"{base}/core02/svc-bmx-adapter-orion/prod/orion"
+            f"/station?data={station_data}"
+        )
+
+    def store_radio_station_preset(
+        self, device_id: str, slot: int, stream_url: str, name: str
+    ) -> str:
+        """Store a stream on one of the six station buttons of a speaker.
+
+        This writes straight to the speaker, the same way a long press on the
+        button does, so the button works immediately instead of after the next
+        time the speaker asks soundcork for its presets.
+
+        Returns the Orion location that was stored, or an empty string on
+        failure, so the caller can record the same preset server-side.
+        """
+        cd = self.all_devices().get(device_id)
+        if not cd or not cd.ip:
+            logger.error(f"Device {device_id} not found or not online")
+            return ""
+
+        orion_url = self.orion_station_url(stream_url, name)
+        if not orion_url:
+            return ""
+
+        location = escape(orion_url, {'"': "&quot;"})
+        preset = (
+            f'<preset id="{int(slot)}">'
+            f'<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl" '
+            f'location="{location}" isPresetable="true">'
+            f"<itemName>{escape(name)}</itemName>"
+            f"</ContentItem></preset>"
+        )
+        try:
+            req = urllib.request.Request(
+                f"http://{cd.ip}:{BOSE_HTTP_PORT}/storePreset",
+                data=preset.encode(),
+                method="POST",
+                headers={"Content-Type": "application/xml"},
+            )
+            with urllib.request.urlopen(req, timeout=10):
+                pass
+            logger.info(f"Stored '{name}' as preset {slot} on device {device_id}")
+            return orion_url
+        except Exception as e:
+            logger.error(f"store_radio_station_preset failed for {device_id}: {e}")
+            return ""
+
     def play_radio_station(self, device_id: str, stream_url: str, name: str) -> bool:
         """Play an internet radio stream URL directly on a device.
 
@@ -445,30 +577,15 @@ class Speakers:
         Returns:
             True if successful, False otherwise
         """
-        import base64 as _b64
-        import json as _json
-
         cd = self.all_devices().get(device_id)
         if not cd or not cd.st_device:
             logger.error(f"Device {device_id} not found or not online")
             return False
 
-        base = self._settings.base_url.rstrip("/") if self._settings.base_url else ""
-        if not base:
-            logger.warning(
-                "base_url is not configured; cannot build LOCAL_INTERNET_RADIO URL"
-            )
+        orion_url = self.orion_station_url(stream_url, name)
+        if not orion_url:
             return False
 
-        station_data = _b64.urlsafe_b64encode(
-            _json.dumps(
-                {"name": name, "imageUrl": "", "streamUrl": stream_url}
-            ).encode()
-        ).decode()
-        orion_url = (
-            f"{base}/core02/svc-bmx-adapter-orion/prod/orion"
-            f"/station?data={station_data}"
-        )
         try:
             bose_ci = BCContentItem(
                 name=name,

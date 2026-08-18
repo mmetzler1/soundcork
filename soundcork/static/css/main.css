@@ -558,7 +558,8 @@ button.preset-card:hover {
     gap: 0.4rem;
 }
 
-#volume-slider {
+#volume-slider,
+#bass-slider {
     width: 100%;
     accent-color: var(--color-primary);
     cursor: pointer;
@@ -698,6 +699,41 @@ button.preset-card:hover {
 .radio-save-btn:disabled {
     cursor: default;
     opacity: 0.7;
+}
+
+.radio-slot-select {
+    flex-shrink: 0;
+    padding: 0.3rem 0.25rem;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-surface);
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.radio-hw-btn {
+    flex-shrink: 0;
+    padding: 0.3rem 0.5rem;
+    border: 2px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-surface);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.radio-hw-btn:hover:not(:disabled) {
+    border-color: var(--color-primary);
+}
+
+.radio-hw-btn:disabled {
+    cursor: default;
+    opacity: 0.7;
+}
+
+#bass-control .hint {
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
 }
 
 /* ------------------------------------------------------------------ */

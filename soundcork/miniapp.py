@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Number of station buttons on a SoundTouch speaker.
+HARDWARE_PRESET_SLOTS = 6
+
 # radio-browser.info API base — uses one of the community DNS-round-robin servers
 _RADIO_BROWSER_API = "https://de1.api.radio-browser.info/json"
 
@@ -609,6 +612,40 @@ def get_miniapp_router(
         return JSONResponse({"error": "failed to set volume"}, status_code=503)
 
     # ------------------------------------------------------------------
+    # Bass
+    # ------------------------------------------------------------------
+
+    @router.get("/miniapp/bass")
+    async def get_bass(request: Request):
+        """Return bass level and the range the selected device supports.
+
+        There is no matching treble endpoint: the SoundTouch API only exposes
+        bass, so soundcork cannot offer a treble control for these speakers.
+        """
+        device_id = request.cookies.get("soundcork_selected_device_id")
+        if not device_id:
+            return JSONResponse({"error": "no device selected"}, status_code=400)
+        info = speakers.get_bass(device_id)
+        if info is None:
+            return JSONResponse({"error": "device unreachable"}, status_code=503)
+        return JSONResponse(info)
+
+    @router.post("/miniapp/bass")
+    async def set_bass(request: Request):
+        """Set the bass of the selected device. Body: JSON {"bass": int}."""
+        device_id = request.cookies.get("soundcork_selected_device_id")
+        if not device_id:
+            return JSONResponse({"error": "no device selected"}, status_code=400)
+        try:
+            body = await request.json()
+            level = int(body.get("bass", 0))
+        except Exception:
+            return JSONResponse({"error": "invalid body"}, status_code=400)
+        if speakers.set_bass(device_id, level):
+            return JSONResponse({"ok": True, "bass": level})
+        return JSONResponse({"error": "failed to set bass"}, status_code=503)
+
+    # ------------------------------------------------------------------
     # Radio Browser
     # ------------------------------------------------------------------
 
@@ -727,6 +764,71 @@ def get_miniapp_router(
             f"Saved radio preset '{name}' as ID {new_id} for account {account_id}"
         )
         return JSONResponse({"ok": True, "id": str(new_id)})
+
+    @router.post("/miniapp/save-hardware-preset")
+    async def save_hardware_preset(request: Request):
+        """Put a radio-browser.info station on a station button (1-6).
+
+        The station is written to the speaker itself so the button works right
+        away, and to the datastore so it survives a factory reset of the
+        speaker and shows up in the dashboard.
+        """
+        from datetime import datetime, timezone
+
+        from soundcork.model import Preset
+
+        account_id = request.cookies.get("soundcork_account_id")
+        device_id = request.cookies.get("soundcork_selected_device_id")
+        if not account_id:
+            return JSONResponse({"error": "not logged in"}, status_code=401)
+        if not device_id:
+            return JSONResponse({"error": "kein Gerät ausgewählt"}, status_code=400)
+        try:
+            body = await request.json()
+            name = str(body.get("name", "")).strip()
+            url = str(body.get("url", "")).strip()
+            slot = int(body.get("slot", 0))
+        except Exception:
+            return JSONResponse({"error": "invalid body"}, status_code=400)
+        if not name or not url:
+            return JSONResponse({"error": "missing name or url"}, status_code=400)
+        if not 1 <= slot <= HARDWARE_PRESET_SLOTS:
+            return JSONResponse(
+                {"error": f"Stationstaste muss 1-{HARDWARE_PRESET_SLOTS} sein"},
+                status_code=400,
+            )
+
+        location = speakers.store_radio_station_preset(device_id, slot, url, name)
+        if not location:
+            return JSONResponse(
+                {"error": "Speichern auf dem Lautsprecher fehlgeschlagen"},
+                status_code=503,
+            )
+
+        try:
+            presets = datastore.get_presets(account_id)
+        except Exception:
+            presets = []
+        presets = [p for p in presets if p.id != str(slot)]
+
+        now = str(int(datetime.now(timezone.utc).timestamp()))
+        presets.append(
+            Preset(
+                id=str(slot),
+                name=name,
+                source="LOCAL_INTERNET_RADIO",
+                type="stationurl",
+                location=location,
+                source_account="",
+                is_presetable="true",
+                created_on=now,
+                updated_on=now,
+                container_art="",
+            )
+        )
+        datastore.save_presets(account_id, device_id, presets)
+        logger.info(f"Saved '{name}' to station button {slot} for account {account_id}")
+        return JSONResponse({"ok": True, "slot": slot})
 
     # ------------------------------------------------------------------
     # Music Assistant

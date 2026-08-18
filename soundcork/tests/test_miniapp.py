@@ -36,6 +36,9 @@ class FakeDatastore:
             device_id=DEVICE_ID,
         )
 
+    def __init__(self) -> None:
+        self.saved_presets: list[Preset] | None = None
+
     def get_presets(self, account_id: str) -> list[Preset]:
         assert account_id == ACCOUNT_ID
         return [
@@ -49,11 +52,16 @@ class FakeDatastore:
             )
         ]
 
+    def save_presets(self, account_id: str, device_id: str, presets: list[Preset]):
+        self.saved_presets = presets
+
 
 class FakeSpeakers:
     def __init__(self, play_result: bool = True) -> None:
         self.play_result = play_result
         self.play_calls: list[tuple[str, str]] = []
+        self.stored_presets: list[tuple[str, int, str, str]] = []
+        self.bass = {"available": True, "bass": -3, "min": -9, "max": 0, "default": 0}
 
     def all_devices(self):
         return {
@@ -69,15 +77,113 @@ class FakeSpeakers:
         self.play_calls.append((device_id, content_item_id))
         return self.play_result
 
+    def get_bass(self, device_id: str):
+        return self.bass
+
+    def set_bass(self, device_id: str, level: int) -> bool:
+        self.bass["bass"] = level
+        return True
+
+    def store_radio_station_preset(
+        self, device_id: str, slot: int, stream_url: str, name: str
+    ) -> str:
+        self.stored_presets.append((device_id, slot, stream_url, name))
+        return f"http://soundcork/orion/station?data={name}"
+
 
 def make_client(monkeypatch, speakers: FakeSpeakers | None = None):
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
     app = FastAPI()
     fake_speakers = speakers or FakeSpeakers()
+    fake_datastore = FakeDatastore()
     app.include_router(
-        get_miniapp_router(cast(Any, FakeDatastore()), cast(Any, fake_speakers))
+        get_miniapp_router(cast(Any, fake_datastore), cast(Any, fake_speakers))
     )
-    return TestClient(app), fake_speakers
+    client = TestClient(app)
+    client.datastore = fake_datastore  # type: ignore[attr-defined]
+    return client, fake_speakers
+
+
+SESSION = {
+    "Cookie": f"soundcork_account_id={ACCOUNT_ID}; "
+    f"soundcork_selected_device_id={DEVICE_ID}"
+}
+
+
+def test_save_hardware_preset_writes_to_speaker_and_datastore(monkeypatch):
+    """A station button has to be set on the speaker as well as recorded here.
+
+    Writing only to the datastore would leave the button dead until the
+    speaker happens to ask soundcork for its presets again.
+    """
+    client, speakers = make_client(monkeypatch)
+
+    response = client.post(
+        "/miniapp/save-hardware-preset",
+        json={"name": "NDR 2", "url": "http://icecast.ndr.de/stream.mp3", "slot": 3},
+        headers=SESSION,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "slot": 3}
+    assert speakers.stored_presets == [
+        (DEVICE_ID, 3, "http://icecast.ndr.de/stream.mp3", "NDR 2")
+    ]
+    saved = client.datastore.saved_presets  # type: ignore[attr-defined]
+    stored = next(preset for preset in saved if preset.id == "3")
+    assert stored.name == "NDR 2"
+    assert stored.source == "LOCAL_INTERNET_RADIO"
+    assert stored.location == "http://soundcork/orion/station?data=NDR 2"
+
+
+def test_save_hardware_preset_rejects_a_slot_without_a_button(monkeypatch):
+    client, speakers = make_client(monkeypatch)
+
+    response = client.post(
+        "/miniapp/save-hardware-preset",
+        json={"name": "NDR 2", "url": "http://example.com/s.mp3", "slot": 7},
+        headers=SESSION,
+    )
+
+    assert response.status_code == 400
+    assert speakers.stored_presets == []
+
+
+def test_save_hardware_preset_needs_a_selected_device(monkeypatch):
+    client, speakers = make_client(monkeypatch)
+
+    response = client.post(
+        "/miniapp/save-hardware-preset",
+        json={"name": "NDR 2", "url": "http://example.com/s.mp3", "slot": 1},
+        headers={"Cookie": f"soundcork_account_id={ACCOUNT_ID}"},
+    )
+
+    assert response.status_code == 400
+    assert speakers.stored_presets == []
+
+
+def test_bass_reports_the_range_the_device_supports(monkeypatch):
+    client, _speakers = make_client(monkeypatch)
+
+    response = client.get("/miniapp/bass", headers=SESSION)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "available": True,
+        "bass": -3,
+        "min": -9,
+        "max": 0,
+        "default": 0,
+    }
+
+
+def test_bass_can_be_set(monkeypatch):
+    client, speakers = make_client(monkeypatch)
+
+    response = client.post("/miniapp/bass", json={"bass": -6}, headers=SESSION)
+
+    assert response.status_code == 200
+    assert speakers.bass["bass"] == -6
 
 
 def set_cookie_headers(response) -> list[str]:

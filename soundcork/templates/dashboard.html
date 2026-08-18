@@ -153,6 +153,16 @@
                 aria-label="Volume"
                 disabled>
         </div>
+        <div class="volume-control" id="bass-control">
+            <label for="bass-slider">🎚 Bass <span id="bass-label">—</span></label>
+            <input
+                type="range"
+                id="bass-slider"
+                min="-9" max="0" step="1"
+                aria-label="Bass"
+                disabled>
+            <div class="hint" id="bass-hint"></div>
+        </div>
         {% if music_assistant_url %}
         <div class="ma-sidebar">
             <button type="button" class="ma-open-button" onclick="window.open('{{ music_assistant_url }}', '_blank', 'noopener')">
@@ -209,6 +219,56 @@
 })();
 
 // ------------------------------------------------------------------ //
+// Bass slider
+//
+// SoundTouch speakers expose bass only -- there is no treble endpoint in the
+// firmware -- and the usable range differs per model, so it comes from the
+// device rather than from the markup.
+// ------------------------------------------------------------------ //
+(function () {
+    const slider = document.getElementById('bass-slider');
+    const label  = document.getElementById('bass-label');
+    const hint   = document.getElementById('bass-hint');
+    if (!slider) return;
+
+    let debounceTimer;
+
+    async function fetchBass() {
+        try {
+            const r = await fetch('/miniapp/bass');
+            if (!r.ok) return;
+            const d = await r.json();
+            if (!d.available) {
+                hint.textContent = 'Gerät hat keine Klangregelung.';
+                return;
+            }
+            slider.min   = d.min;
+            slider.max   = d.max;
+            slider.value = d.bass;
+            label.textContent = d.bass;
+            slider.disabled = false;
+            hint.textContent = `${d.min} … ${d.max}`;
+        } catch (_) {}
+    }
+
+    slider.addEventListener('input', () => {
+        label.textContent = slider.value;
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(async () => {
+            try {
+                await fetch('/miniapp/bass', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bass: parseInt(slider.value, 10) }),
+                });
+            } catch (_) {}
+        }, 200);
+    });
+
+    fetchBass();
+})();
+
+// ------------------------------------------------------------------ //
 // Radio Browser
 // ------------------------------------------------------------------ //
 async function searchRadio(evt, forceQuery) {
@@ -249,9 +309,20 @@ async function searchRadio(evt, forceQuery) {
                 <span class="radio-meta">${escHtml(s.country)}${s.bitrate ? ' · ' + s.bitrate + ' kbps' : ''}</span>
                 <button class="radio-play-btn" aria-label="Play ${escHtml(s.name)}">▶ Play</button>
                 <button class="radio-save-btn" title="Als Preset im Dashboard speichern" aria-label="Preset speichern für ${escHtml(s.name)}">⭐</button>
+                <select class="radio-slot-select" aria-label="Stationstaste für ${escHtml(s.name)}">
+                    <option value="">Taste …</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                    <option value="6">6</option>
+                </select>
+                <button class="radio-hw-btn" title="Auf Stationstaste des Lautsprechers speichern" aria-label="Auf Stationstaste speichern für ${escHtml(s.name)}">💾</button>
             `;
             li.querySelector('.radio-play-btn').addEventListener('click', () => playStation(s));
             li.querySelector('.radio-save-btn').addEventListener('click', (e) => saveRadioPreset(e, s));
+            li.querySelector('.radio-hw-btn').addEventListener('click', (e) => saveHardwarePreset(e, s, li.querySelector('.radio-slot-select')));
             results.appendChild(li);
         });
     } catch (e) {
@@ -301,6 +372,40 @@ async function saveRadioPreset(evt, station) {
     } catch (_) {
         btn.textContent = '⭐';
         btn.title = 'Netzwerkfehler';
+        btn.disabled = false;
+    }
+}
+
+async function saveHardwarePreset(evt, station, select) {
+    const btn    = evt.currentTarget;
+    const status = document.getElementById('radio-status');
+    const slot   = select ? select.value : '';
+    if (!slot) {
+        status.textContent = 'Bitte zuerst eine Stationstaste (1–6) auswählen.';
+        return;
+    }
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    try {
+        const r = await fetch('/miniapp/save-hardware-preset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: station.url, name: station.name, slot: parseInt(slot, 10) }),
+        });
+        const d = await r.json();
+        if (r.ok && d.ok) {
+            btn.textContent = '✅';
+            btn.title = `Auf Stationstaste ${slot} gespeichert`;
+            status.textContent = `„${station.name}" liegt jetzt auf Stationstaste ${slot}.`;
+        } else {
+            btn.textContent = '💾';
+            btn.title = d.error || 'Fehler beim Speichern';
+            status.textContent = 'Fehler: ' + (d.error || 'Speichern fehlgeschlagen');
+            btn.disabled = false;
+        }
+    } catch (_) {
+        btn.textContent = '💾';
+        status.textContent = 'Netzwerkfehler beim Speichern.';
         btn.disabled = false;
     }
 }

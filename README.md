@@ -11,9 +11,11 @@ This fork adds deployment improvements and new UI features over the original:
 
 - **Connection relay (port 30034)** — The SoundTouch firmware routes certain HTTPS requests through a local proxy at `127.0.0.1:30034`. soundcork installs a persistent `nc` relay on the speaker (via `/mnt/nv/rc.local`) that forwards all connections on that port to the soundcork server. This makes BMX and media artwork requests work without any modifications to the speaker's certificate trust store.
 
-- **Internet radio browser** — The dashboard includes a search-as-you-type radio browser powered by [radio-browser.info](https://www.radio-browser.info). Any station can be started on a SoundTouch speaker with a single click.
+- **Internet radio browser** — The dashboard includes a search-as-you-type radio browser powered by [radio-browser.info](https://www.radio-browser.info). Any station can be started on a SoundTouch speaker with a single click, saved as a dashboard preset (⭐), or written straight onto one of the six station buttons of the speaker (💾 with a button number).
 
 - **Volume slider** — A range slider in the sidebar shows and controls the current speaker volume in real time via the SoundTouch HTTP API.
+
+- **Bass control** — A second slider adjusts the bass, using the range the speaker reports in `/bassCapabilities` (a SoundTouch 20 allows -9 to 0). There is no treble slider: the SoundTouch HTTP API has no treble endpoint, so it is not something soundcork can offer.
 
 - **Music Assistant integration** — [Music Assistant](https://music-assistant.io) runs as an additional Docker container (`ghcr.io/music-assistant/server:latest`, reachable at port 8095). A button in the dashboard opens its web UI in a new browser window. A second button starts the Music Assistant audio stream directly on the selected SoundTouch speaker (requires `MUSIC_ASSISTANT_STREAM_URL` to be set in `.env` — see configuration below).
 
