@@ -41,6 +41,16 @@ PROVIDERS = [
     "RADIO_BROWSER",  # https://www.radio-browser.info
 ]
 
+# Sources that only exist inside soundcork. The SoundTouch firmware knows
+# nothing about them, so they must never show up in a marge response -- neither
+# in the source list nor as the source of a preset or a recent.
+INTERNAL_SOURCES = ("RADIO_BROWSER",)
+
+# Speakers have six station buttons. Presets from this id upwards are
+# dashboard-only and are not sent to a speaker.
+FIRST_INTERNAL_PRESET_ID = 100
+LAST_INTERNAL_PRESET_ID = 199
+
 # where we store associated devices.
 DEVICES_DIR = "devices"
 

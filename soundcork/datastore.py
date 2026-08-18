@@ -17,6 +17,7 @@ from soundcork.constants import (
     DEFAULT_DATESTR,
     DEVICE_INFO_FILE,
     DEVICES_DIR,
+    INTERNAL_SOURCES,
     POWERON_FILE,
     PRESETS_FILE,
     RECENTS_FILE,
@@ -357,40 +358,63 @@ class DataStore:
         sources_tree = ET.parse(path.join(self.account_dir(account), SOURCES_FILE))
         root = sources_tree.getroot()
         sources_list = []
+
+        def source_type(source_elem: ET.Element) -> str:
+            key_elem = source_elem.find("sourceKey")
+            return key_elem.attrib.get("type", "") if key_elem is not None else ""
+
         # TODO we should put ids in the Sources.xml file but if we don't then
-        # this workaround is better than nothing
+        # this workaround is better than nothing.
+        #
+        # A generated id must not land on one that is spelled out in the file:
+        # a speaker cannot tell two sources with the same id apart, and stops
+        # storing presets when it hits that. Soundcork's own sources are left
+        # out of the numbering entirely -- they never reach a speaker, and
+        # letting them shift the ids would silently repoint every source a
+        # speaker has already cached.
+        explicit_ids = {
+            source_elem.attrib["id"]
+            for source_elem in root.findall("source")
+            if source_elem.attrib.get("id", "")
+            and source_type(source_elem) not in INTERNAL_SOURCES
+        }
         last_id = 100001
         for source_elem in root.findall("source"):
-            display_name = source_elem.attrib.get("displayName", "")
+            if source_type(source_elem) in INTERNAL_SOURCES:
+                sources_list.append(
+                    self._configured_source_from_xml(
+                        source_elem, source_elem.attrib.get("id", "") or "0"
+                    )
+                )
+                continue
             # the id had to be hand-added to the xml; once we get it working we'll
             # see if we can use an artificially-generated value
             id = source_elem.attrib.get("id", "")
             if id == "":
+                while str(last_id) in explicit_ids:
+                    last_id += 1
                 id = str(last_id)
                 last_id += 1
-            secret = source_elem.attrib.get("secret", "")
-            secret_type = source_elem.attrib.get("secretType", "")
-            created_on = strip_element_text(source_elem.find("createdOn"))
-            updated_on = strip_element_text(source_elem.find("updatedOn"))
-
-            # if sourceKey is not present, the .find will correctly raise an error here
-            source_key_elem = source_elem.find("sourceKey")
-            source_key_account = source_key_elem.attrib.get("account", "")  # type: ignore
-            source_key_type = source_key_elem.attrib.get("type", "")  # type: ignore
-            sources_list.append(
-                ConfiguredSource(
-                    display_name=display_name,
-                    id=id,
-                    secret=secret,
-                    secret_type=secret_type,
-                    source_key_type=source_key_type,
-                    source_key_account=source_key_account,
-                    created_on=created_on,
-                    updated_on=updated_on,
-                )
-            )
+            sources_list.append(self._configured_source_from_xml(source_elem, id))
 
         return sources_list
+
+    @staticmethod
+    def _configured_source_from_xml(
+        source_elem: ET.Element, id: str
+    ) -> ConfiguredSource:
+        # if sourceKey is not present, the .find will correctly raise an error here
+        source_key_elem = source_elem.find("sourceKey")
+        return ConfiguredSource(
+            display_name=source_elem.attrib.get("displayName", ""),
+            id=id,
+            secret=source_elem.attrib.get("secret", ""),
+            secret_type=source_elem.attrib.get("secretType", ""),
+            source_key_type=source_key_elem.attrib.get("type", ""),  # type: ignore
+            source_key_account=source_key_elem.attrib.get("account", ""),  # type: ignore
+            created_on=strip_element_text(source_elem.find("createdOn")),
+            updated_on=strip_element_text(source_elem.find("updatedOn")),
+        )
 
     def add_source(
         self, account: str, new_source: ConfiguredSource

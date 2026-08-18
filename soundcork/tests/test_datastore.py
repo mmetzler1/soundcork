@@ -545,6 +545,45 @@ def test_get_configured_sources_parses_and_generates_missing_id(
     assert loaded[1].id == "100001"
 
 
+def test_get_configured_sources_generated_id_skips_explicit_ids(
+    datastore: DataStore,
+    sample_device: DeviceInfo,
+    monkeypatch,
+):
+    """A generated id must never duplicate one that is written in the file.
+
+    A speaker cannot tell two sources with the same id apart, and then refuses
+    to store presets at all.
+    """
+    xml = ET.fromstring("""
+        <sources>
+          <source displayName="One" secret="s1" secretType="token">
+            <createdOn>1</createdOn>
+            <updatedOn>2</updatedOn>
+            <sourceKey account="a" type="t" />
+          </source>
+          <source displayName="Two" secret="s2" secretType="token" id="100001">
+            <createdOn>3</createdOn>
+            <updatedOn>4</updatedOn>
+            <sourceKey account="b" type="u" />
+          </source>
+          <source displayName="Three" secret="s3" secretType="token">
+            <createdOn>5</createdOn>
+            <updatedOn>6</updatedOn>
+            <sourceKey account="c" type="v" />
+          </source>
+        </sources>
+        """)
+    monkeypatch.setattr("soundcork.datastore.ET.parse", lambda _: ET.ElementTree(xml))
+    monkeypatch.setattr("soundcork.datastore.path.exists", lambda _: True)
+
+    loaded = datastore.get_configured_sources("12345", sample_device.device_id)
+
+    ids = [source.id for source in loaded]
+    assert ids == ["100002", "100001", "100003"]
+    assert len(set(ids)) == len(ids)
+
+
 def test_save_poweron_writes_xml_when_dir_exists(
     datastore: DataStore,
     sample_device: DeviceInfo,

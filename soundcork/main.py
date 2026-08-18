@@ -4,6 +4,7 @@ import os
 import re
 import urllib.request
 import xml.etree.ElementTree as ET
+import zlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 from http import HTTPStatus
@@ -43,6 +44,7 @@ from soundcork.devices import (
     read_device_info,
     read_recents,
 )
+from soundcork.etag import WriteEtag
 from soundcork.groups import get_groups_router
 from soundcork.groups_service import get_groups_service_router
 from soundcork.marge import (
@@ -309,7 +311,20 @@ def streamingsourceproviders():
 
 
 def etag_for_presets(request: Request) -> str:
-    return str(datastore.etag_for_presets(str(request.path_params.get("account"))))
+    """Etag over the presets a speaker can actually see.
+
+    This is deliberately content based rather than the mtime of Presets.xml.
+    The dashboard writes that file too, and its dashboard-only presets are
+    never sent to a speaker, so touching them must not look like a change to
+    the speaker -- see `WriteEtag` for why a speaker cannot recover from
+    holding an etag that no longer matches.
+    """
+    account = str(request.path_params.get("account"))
+    try:
+        presets = ET.tostring(presets_xml(datastore, account))
+    except (FileNotFoundError, ET.ParseError):
+        return str(datastore.etag_for_presets(account))
+    return str(zlib.crc32(presets))
 
 
 def etag_for_recents(request: Request) -> str:
@@ -380,7 +395,7 @@ def account_presets_all(
     tags=["marge"],
     dependencies=[
         Depends(
-            Etag(
+            WriteEtag(
                 etag_gen=etag_for_presets,
                 weak=False,
             )
@@ -521,7 +536,7 @@ def account_devices(account: Annotated[str, Path(pattern=ACCOUNT_RE)]) -> str:
     "/marge/streaming/account/{account}/device/{device}/recent",
     response_class=BoseXMLResponse,
     tags=["marge"],
-    dependencies=[Depends(Etag(etag_gen=etag_for_recents, weak=False))],
+    dependencies=[Depends(WriteEtag(etag_gen=etag_for_recents, weak=False))],
 )
 async def post_account_recent(
     account: Annotated[str, Path(pattern=ACCOUNT_RE)],

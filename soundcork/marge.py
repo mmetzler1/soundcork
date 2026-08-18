@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 
 from soundcork.config import Settings
-from soundcork.constants import DEFAULT_DATESTR, PROVIDERS
+from soundcork.constants import (
+    DEFAULT_DATESTR,
+    FIRST_INTERNAL_PRESET_ID,
+    INTERNAL_SOURCES,
+    PROVIDERS,
+)
 from soundcork.devices import get_device_by_id, hostname_for_device, read_device_info
 from soundcork.model import (
     ConfiguredSource,
@@ -67,6 +72,18 @@ def preset_xml(preset: Preset, conf_sources_list: list[ConfiguredSource]) -> ET.
     return preset_element
 
 
+def is_internal_preset(preset: Preset) -> bool:
+    """Whether a preset belongs to the soundcork dashboard rather than a speaker.
+
+    A speaker has six station buttons and only understands the sources Bose
+    shipped, so dashboard-only presets have to stay out of every marge
+    response -- including the etag that is calculated over it.
+    """
+    if preset.source in INTERNAL_SOURCES:
+        return True
+    return preset.id.isdigit() and int(preset.id) >= FIRST_INTERNAL_PRESET_ID
+
+
 def presets_xml(datastore: "DataStore", account: str, device: str = "") -> ET.Element:
     conf_sources_list = datastore.get_configured_sources(account, device)
 
@@ -74,6 +91,13 @@ def presets_xml(datastore: "DataStore", account: str, device: str = "") -> ET.El
 
     presets_element = ET.Element("presets")
     for preset in presets_list:
+        if is_internal_preset(preset):
+            logger.debug(
+                "Not sending dashboard preset %s ('%s') to a speaker",
+                preset.id,
+                preset.name,
+            )
+            continue
         try:
             preset_element = preset_xml(preset, conf_sources_list)
             presets_element.append(preset_element)
@@ -218,6 +242,11 @@ def all_sources_xml(
     sources_elem = ET.Element("sources")
 
     for conf_source in configured_sources:
+        # Sources soundcork invented for its own dashboard carry a provider id
+        # no firmware knows. Handing one to a speaker corrupts the source list
+        # it needs to attach a source to a preset it is trying to store.
+        if conf_source.source_key_type in INTERNAL_SOURCES:
+            continue
         sources_elem.append(configured_source_xml(conf_source))
 
     return sources_elem
@@ -254,6 +283,8 @@ def recents_xml(datastore: "DataStore", account: str, device: str) -> ET.Element
 
     recents_element = ET.Element("recents")
     for recent in recents_list:
+        if recent.source in INTERNAL_SOURCES:
+            continue
         lastplayed = datetime.fromtimestamp(
             int(recent.utc_time), timezone.utc
         ).isoformat()
